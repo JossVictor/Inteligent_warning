@@ -1,0 +1,121 @@
+import os
+import time
+import hashlib
+import psutil
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# --------------------------
+#  CONFIGURACIÓN
+# --------------------------
+ARCHIVOS_CRITICOS = [
+    "/etc/passwd",
+    "/etc/hosts",
+]
+
+PROCESOS_SENSIBLES = ["python", "powershell", "cmd.exe"]
+RISK_THRESHOLD = 60   # Al superar esto dispara alerta
+
+
+# --------------------------
+#  FUNCIÓN: HASH DE ARCHIVO
+# --------------------------
+def hash_archivo(ruta):
+    try:
+        with open(ruta, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except:
+        return None
+
+
+# --------------------------
+#  CLASE MONITOR DE ARCHIVOS
+# --------------------------
+class MonitorArchivos(FileSystemEventHandler):
+
+    def __init__(self, hashes_originales):
+        self.hashes = hashes_originales
+
+    def on_modified(self, event):
+        if event.src_path in self.hashes:
+            nuevo_hash = hash_archivo(event.src_path)
+            if nuevo_hash != self.hashes[event.src_path]:
+                print(f"[⚠ ALERTA] Archivo crítico modificado: {event.src_path}")
+                print(f"          Hash previo:  {self.hashes[event.src_path]}")
+                print(f"          Nuevo hash:   {nuevo_hash}")
+                self.hashes[event.src_path] = nuevo_hash
+
+
+# --------------------------
+#  DETECCIÓN DE PROCESOS
+# --------------------------
+def detectar_procesos_sospechosos():
+    riesgo_total = 0
+
+    for proceso in psutil.process_iter(["pid", "name", "cmdline"]):
+        nombre = proceso.info["name"] or ""
+        cmd = " ".join(proceso.info["cmdline"]) if proceso.info["cmdline"] else ""
+
+        # Regla 1: procesos catalogados como sensibles
+        if nombre.lower() in PROCESOS_SENSIBLES:
+            print(f"[!] Proceso sensible detectado: {nombre} | PID: {proceso.info['pid']}")
+            riesgo_total += 30
+
+        # Regla 2: procesos ejecutando scripts
+        if ".py" in cmd or ".ps1" in cmd:
+            print(f"[!] Proceso ejecutando script: {cmd} | PID: {proceso.info['pid']}")
+            riesgo_total += 20
+
+        # Regla 3: conexiones de red sospechosas
+        try:
+            conexiones = proceso.connections()
+            if len(conexiones) > 5:
+                print(f"[!] Proceso con múltiples conexiones: {nombre} ({len(conexiones)} conexiones)")
+                riesgo_total += 25
+        except:
+            pass
+
+    return riesgo_total
+
+
+# --------------------------
+#  PROGRAMA PRINCIPAL
+# --------------------------
+def iniciar_cyberwatch():
+
+    print("===== CYBERWATCH MONITOR =====")
+    print("Iniciando monitoreo...\n")
+
+    # Hash inicial de archivos críticos
+    hashes = {ruta: hash_archivo(ruta) for ruta in ARCHIVOS_CRITICOS}
+
+    # Iniciar monitor de archivos
+    event_handler = MonitorArchivos(hashes)
+    observer = Observer()
+
+    for ruta in ARCHIVOS_CRITICOS:
+        carpeta = os.path.dirname(ruta)
+        observer.schedule(event_handler, carpeta, recursive=False)
+
+    observer.start()
+
+    try:
+        while True:
+            riesgo = detectar_procesos_sospechosos()
+
+            if riesgo >= RISK_THRESHOLD:
+                print("\n==============================")
+                print(" ⚠⚠ ALERTA DE SEGURIDAD ⚠⚠")
+                print(f" Nivel de riesgo detectado: {riesgo}")
+                print("==============================\n")
+
+            time.sleep(5)
+
+    except KeyboardInterrupt:
+        observer.stop()
+
+    observer.join()
+
+
+if __name__ == "__main__":
+    iniciar_cyberwatch()
